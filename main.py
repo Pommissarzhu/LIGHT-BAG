@@ -1,3 +1,4 @@
+import random
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader, random_split
@@ -131,15 +132,48 @@ def print_class_distribution(dataset, name):
             counts[l] += 1
         print(f"{name}类别分布: 0类={counts[0]}, 1类={counts[1]}, 2类={counts[2]}")
 
+def set_random_seed(seed: int = 42, deterministic: bool = True):
+    """
+    统一设置随机数种子，确保实验可复现
+    
+    Args:
+        seed (int): 基础随机种子（默认42）
+        deterministic (bool): 是否启用完全确定性模式（关闭非确定性优化）
+    Returns:
+        int: 实际使用的随机种子（方便外部组件复用）
+    """
+    # Python内置random模块
+    random.seed(seed)
+    # numpy随机数
+    np.random.seed(seed)
+    # PyTorch CPU随机数
+    torch.manual_seed(seed)
+    # PyTorch 所有GPU随机数（如果有）
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    
+    # 关闭CuDNN非确定性优化（针对NVIDIA GPU）
+    if deterministic and torch.backends.cudnn.is_available():
+        torch.backends.cudnn.deterministic = True  # 强制使用确定性算法
+        torch.backends.cudnn.benchmark = False      # 关闭自动选择最优算法
+    
+    # 关闭MPS非确定性（针对Apple GPU）
+    if deterministic and torch.backends.mps.is_available():
+        torch.backends.mps.deterministic = True     # MPS确定性模式
+
+# 在main函数最开始调用（示例）
 if __name__ == "__main__":
+    # 优先设置随机种子（确保所有操作可复现）
+    fixed_seed = set_random_seed(seed=352, deterministic=False)  # 获取统一种子
+    
     DATA_DIR = "/Users/aero/LIGHT-BAG/dataset"
     
     # 获取原始训练集（80%）和测试集（20%）
-    train_data_raw, test_data_raw = create_serve_datasets(DATA_DIR)
+    train_data_raw, test_data_raw = create_serve_datasets(DATA_DIR, random_seed=42)
 
-    # 5折交叉验证设置
+    # 5折交叉验证设置（使用统一种子）
     from sklearn.model_selection import StratifiedKFold
-    skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=fixed_seed)  # 复用统一种子
     fold_results = []  # 保存各折验证结果
 
     # 提取训练集的特征和标签（用于生成折叠索引）
@@ -194,7 +228,7 @@ if __name__ == "__main__":
 
         # 模型初始化（与原代码一致）
         input_size = 6
-        hidden_size = 32
+        hidden_size = 64
         num_layers = 2
         num_classes = 3
         device = torch.device("mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu")
@@ -258,25 +292,25 @@ if __name__ == "__main__":
     print(f"\n5折交叉验证平均准确率: {avg_val_acc:.2f}%")
 
     # 最终测试集评估（使用任意一折的最佳模型或集成模型，此处示例使用第1折模型）
-    model.load_state_dict(torch.load("best_lstm_model_fold1.pth"))
-    model.eval()
-    test_correct = 0
-    test_total = 0
+    # model.load_state_dict(torch.load("best_lstm_model_fold1.pth"))
+    # model.eval()
+    # test_correct = 0
+    # test_total = 0
     # 归一化测试集（使用第1折的scaler，实际应使用所有训练数据的scaler，此处简化）
-    test_features = torch.stack([item[0] for item in test_data_raw])
-    test_labels = torch.stack([item[1] for item in test_data_raw])
-    test_normalized = normalize(test_features)  # 使用第1折的normalize函数
-    test_ds = ServeDataset(data=test_normalized, labels=test_labels)
-    test_loader = DataLoader(test_ds, batch_size=16, shuffle=False, num_workers=8)
+    # test_features = torch.stack([item[0] for item in test_data_raw])
+    # test_labels = torch.stack([item[1] for item in test_data_raw])
+    # test_normalized = normalize(test_features)  # 使用第1折的normalize函数
+    # test_ds = ServeDataset(data=test_normalized, labels=test_labels)
+    # test_loader = DataLoader(test_ds, batch_size=16, shuffle=False, num_workers=8)
     
-    with torch.no_grad():
-        for data, labels in test_loader:
-            data, labels = data.to(device), labels.to(device)
-            outputs = model(data)
-            _, predicted = torch.max(outputs.data, 1)
-            test_total += labels.size(0)
-            test_correct += (predicted == labels).sum().item()
-    print(f"最终测试集准确率: {100 * test_correct / test_total:.2f}%")
+    # with torch.no_grad():
+    #     for data, labels in test_loader:
+    #         data, labels = data.to(device), labels.to(device)
+    #         outputs = model(data)
+    #         _, predicted = torch.max(outputs.data, 1)
+    #         test_total += labels.size(0)
+    #         test_correct += (predicted == labels).sum().item()
+    # print(f"最终测试集准确率: {100 * test_correct / test_total:.2f}%")
 
     # 最终测试集评估（修改为遍历所有折模型）
     fold_test_accs = []  # 保存各折测试准确率
