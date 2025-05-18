@@ -1,4 +1,4 @@
-windows_plots/
+window_plots/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
