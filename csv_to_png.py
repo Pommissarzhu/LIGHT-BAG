@@ -16,10 +16,10 @@ stride = 4
 total_samples = len(data)
 num_windows = (total_samples - window_size) // stride + 1
 
-anno = [80, 120, 161, 205, 246, 289, 328, 370, 411, 452]
-for i in range(len(anno)):  # 修改为使用列表长度
-    anno[i] = anno[i] - 1
-print(anno)
+# anno = [80, 120, 161, 205, 246, 289, 328, 370, 411, 452]
+# for i in range(len(anno)):  # 修改为使用列表长度
+#     anno[i] = anno[i] - 1
+# print(anno)
 
 # 滑动窗口处理
 for i in range(num_windows):
