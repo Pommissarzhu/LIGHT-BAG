@@ -1,6 +1,7 @@
 import random
 import numpy as np
 import torch
+import time  # 新增时间模块导入
 from torch.utils.data import Dataset, DataLoader, random_split
 from sklearn.preprocessing import MinMaxScaler
 
@@ -161,12 +162,18 @@ def set_random_seed(seed: int = 42, deterministic: bool = True):
     if deterministic and torch.backends.mps.is_available():
         torch.backends.mps.deterministic = True     # MPS确定性模式
 
+def count_parameters(model):
+    """计算模型总参数量和可训练参数量"""
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    return total_params, trainable_params
+
 # 在main函数最开始调用（示例）
 if __name__ == "__main__":
     # 优先设置随机种子（确保所有操作可复现）
-    fixed_seed = set_random_seed(seed=352, deterministic=False)  # 获取统一种子
+    fixed_seed = set_random_seed(seed=352, deterministic=True)  # 获取统一种子
     
-    DATA_DIR = "/Users/aero/LIGHT-BAG/dataset"
+    DATA_DIR = "/root/autodl-tmp/LIGHT-BAG-main/dataset"
     
     # 获取原始训练集（80%）和测试集（20%）
     train_data_raw, test_data_raw = create_serve_datasets(DATA_DIR, random_seed=42)
@@ -175,6 +182,7 @@ if __name__ == "__main__":
     from sklearn.model_selection import StratifiedKFold
     skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=fixed_seed)  # 复用统一种子
     fold_results = []  # 保存各折验证结果
+    fold_train_times = []  # 新增：保存各折训练时间
 
     # 提取训练集的特征和标签（用于生成折叠索引）
     train_features_raw = torch.stack([item[0] for item in train_data_raw])
@@ -186,6 +194,7 @@ if __name__ == "__main__":
     # 5折交叉验证设置（修改原循环，添加scaler保存）
     for fold_idx, (train_fold_idx, val_fold_idx) in enumerate(skf.split(train_features_raw, train_labels_raw)):
         print(f"\n===== 第 {fold_idx+1} 折训练 =====")
+        train_start = time.time()  # 记录训练开始时间
         
         # 划分当前折叠的训练/验证数据
         train_fold_data = [train_data_raw[i] for i in train_fold_idx]
@@ -228,13 +237,19 @@ if __name__ == "__main__":
 
         # 模型初始化（与原代码一致）
         input_size = 6
-        hidden_size = 64
+        hidden_size = 512
         num_layers = 2
         num_classes = 3
+        dropout = 0.1
         device = torch.device("mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu")
-        model = LSTMCategorizer(input_size, hidden_size, num_layers, num_classes).to(device)
+        model = LSTMCategorizer(input_size, hidden_size, num_layers, num_classes, dropout).to(device)
+        
+        # 新增：打印模型参数量
+        total_params, trainable_params = count_parameters(model)
+        print(f"模型参数量：总参数 {total_params}, 可训练参数 {trainable_params}")
+
         criterion = torch.nn.CrossEntropyLoss()
-        optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-4)
+        optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-4)
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
 
         # 单折训练（50 epoch）
@@ -284,12 +299,20 @@ if __name__ == "__main__":
                 best_val_acc = val_acc
                 torch.save(model.state_dict(), f"best_lstm_model_fold{fold_idx+1}.pth")
 
+        # 新增：训练时间统计
+        train_end = time.time()
+        train_duration = train_end - train_start
+        fold_train_times.append(train_duration)
+        print(f"第 {fold_idx+1} 折训练时间: {train_duration:.2f} 秒")
+
         fold_results.append(best_val_acc)
         print(f"第 {fold_idx+1} 折最佳验证准确率: {best_val_acc:.2f}%")
 
     # 输出交叉验证结果
     avg_val_acc = sum(fold_results) / len(fold_results)
+    avg_train_time = sum(fold_train_times) / len(fold_train_times)  # 新增平均训练时间
     print(f"\n5折交叉验证平均准确率: {avg_val_acc:.2f}%")
+    print(f"5折平均训练时间: {avg_train_time:.2f} 秒")  # 新增输出
 
     # 最终测试集评估（使用任意一折的最佳模型或集成模型，此处示例使用第1折模型）
     # model.load_state_dict(torch.load("best_lstm_model_fold1.pth"))
@@ -314,6 +337,7 @@ if __name__ == "__main__":
 
     # 最终测试集评估（修改为遍历所有折模型）
     fold_test_accs = []  # 保存各折测试准确率
+    fold_inference_times = []  # 新增：保存各折推理时间
     
     for fold_idx in range(5):
         # 加载当前折的最佳模型
@@ -338,6 +362,7 @@ if __name__ == "__main__":
         # 评估当前折模型
         test_correct = 0
         test_total = 0
+        inference_start = time.time()  # 记录推理开始时间
         with torch.no_grad():
             for data, labels in test_loader:
                 data, labels = data.to(device), labels.to(device)
@@ -345,10 +370,19 @@ if __name__ == "__main__":
                 _, predicted = torch.max(outputs.data, 1)
                 test_total += labels.size(0)
                 test_correct += (predicted == labels).sum().item()
+        inference_end = time.time()  # 记录推理结束时间
+        inference_duration = inference_end - inference_start
+        fold_inference_times.append(inference_duration)
+        print(f"第 {fold_idx+1} 折模型推理时间: {inference_duration:.2f} 秒")
+
         test_acc = 100 * test_correct / test_total
         fold_test_accs.append(test_acc)
         print(f"第 {fold_idx+1} 折模型测试准确率: {test_acc:.2f}%")
 
-    # 计算平均测试准确率
+    # 计算平均测试准确率和平均推理时间
     avg_test_acc = sum(fold_test_accs) / len(fold_test_accs)
+    avg_inference_time = sum(fold_inference_times) / len(fold_inference_times)  # 新增平均推理时间
     print(f"\n5折模型平均测试准确率: {avg_test_acc:.2f}%")
+    print(f"5个模型平均推理时间: {avg_inference_time:.2f} 秒")  # 新增输出
+
+
